@@ -506,7 +506,7 @@ public class ConverterTests {
     SIPMessage message = MessageConverter.convertToMessageDTO(request);
     List<Header> headers = MessageConverter.createHeadersFromMessage(message);
 
-    var requestOut = GRPCSipListener.updateRequest(request, headers);
+    var requestOut = io.routr.utils.RequestUpdater.updateRequest(request, headers);
 
     Iterator<Via> viaIterator = (Iterator<Via>) request.getHeaders(Via.NAME);
     ArrayList<Via> viaList = new ArrayList<>();

@@ -20,12 +20,6 @@ package io.routr;
 
 import gov.nist.javax.sip.SipStackExt;
 import gov.nist.javax.sip.clientauthutils.AccountManager;
-import gov.nist.javax.sip.header.ContentLength;
-import gov.nist.javax.sip.header.Via;
-import gov.nist.javax.sip.header.Contact;
-import gov.nist.javax.sip.header.Route;
-import gov.nist.javax.sip.header.RecordRoute;
-import gov.nist.javax.sip.header.WWWAuthenticate;
 import gov.nist.javax.sip.RequestEventExt;
 import gov.nist.javax.sip.ResponseEventExt;
 import io.grpc.ManagedChannel;
@@ -35,13 +29,11 @@ import io.routr.common.Transport;
 import io.routr.headers.MessageConverter;
 import io.routr.headers.ResponseCode;
 import io.routr.message.ResponseType;
-import io.routr.message.SIPMessage;
-import io.routr.message.Extension;
 import io.routr.processor.MessageRequest;
 import io.routr.processor.MessageResponse;
 import io.routr.processor.NetInterface;
 import io.routr.processor.ProcessorGrpc;
-import io.routr.utils.AccountManagerImpl;
+import io.routr.utils.*;
 import io.routr.events.*;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -54,16 +46,7 @@ import javax.sip.message.MessageFactory;
 import javax.sip.message.Request;
 import javax.sip.message.Response;
 import java.text.ParseException;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.temporal.ChronoUnit;
 import java.util.*;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.io.IOException;
 
 public class GRPCSipListener implements SipListener {
@@ -74,8 +57,9 @@ public class GRPCSipListener implements SipListener {
   private final MessageFactory messageFactory;
   private final AddressFactory addressFactory;
   private final HeaderFactory headerFactory;
-  private final Map<String, Transaction> activeTransactions = new HashMap<>();
-  private List<EventsPublisher> publishers = new ArrayList<>();
+  private final TransactionManager transactionManager;
+  private final EventProcessor eventProcessor;
+  private final AuthenticationHandler authenticationHandler;
 
   public GRPCSipListener(final SipProvider sipProvider, final Map<String, Object> config,
       final List<String> externalAddrs, final List<String> localnets)
@@ -153,6 +137,10 @@ public class GRPCSipListener implements SipListener {
     this.addressFactory = SipFactory.getInstance().createAddressFactory();
     this.headerFactory = SipFactory.getInstance().createHeaderFactory();
 
+    // Initialize extracted components
+    this.transactionManager = new TransactionManager();
+    List<EventsPublisher> publishers = new ArrayList<>();
+    
     String consolePublisherEnabledEnv = System.getenv("CONSOLE_PUBLISHER_ENABLED");
     String natPublisherEnabledEnv = System.getenv("NATS_PUBLISHER_ENABLED");
     String natsPublisherSubjectEnv = System.getenv("NATS_PUBLISHER_SUBJECT");
@@ -178,77 +166,12 @@ public class GRPCSipListener implements SipListener {
 
       LOG.info("nats publisher enabled with subject {} and url {}", subject, natsUrl);
     }
+    
+    this.eventProcessor = new EventProcessor(publishers);
+    this.authenticationHandler = new AuthenticationHandler(
+        (SipStackExt) this.sipProvider.getSipStack(), this.headerFactory);
   }
 
-  static Request updateRequest(final Request request, final List<Header> headers) {
-    var requestOut = (Request) request.clone();
-
-    Iterator<String> names = requestOut.getHeaderNames();
-
-    while (names.hasNext()) {
-      String n = names.next();
-      // WARN: Perhaps we should compute this value
-      if (!n.equals(ContentLength.NAME)) {
-        requestOut.removeHeader(n);
-      }
-    }
-
-    for (Header header : headers) {
-      // Ignore special header that is used for authentication and Content-Length
-      if (header.getName().equalsIgnoreCase(ContentLength.NAME) 
-        || header.getName().equalsIgnoreCase("x-gateway-auth")) {
-        continue;
-      }
-
-      requestOut.addHeader(header);
-    }
-
-    return requestOut;
-  }
-
-  private static boolean isTransactional(final ResponseEvent event) {
-    return (event.getClientTransaction() != null &&
-        hasMethod(event.getResponse(), Request.INVITE, Request.MESSAGE, Request.REGISTER));
-  }
-
-  private static boolean isStackJob(final Response response) {
-    return hasCodes(response, Response.TRYING, Response.REQUEST_TERMINATED)
-        || hasMethod(response, Request.CANCEL);
-  }
-
-  private static boolean authenticationRequired(final Response response) {
-    return hasCodes(response, Response.PROXY_AUTHENTICATION_REQUIRED, Response.UNAUTHORIZED);
-  }
-
-  private static boolean hasMethod(final Response response, final String... methods) {
-    // Get method from CSeq header
-    CSeqHeader cseqHeader = (CSeqHeader) response.getHeader(CSeqHeader.NAME);
-    var method = cseqHeader.getMethod();
-    return Arrays.stream(methods).filter(m -> Objects.equals(m, method)).toArray().length > 0;
-  }
-
-  private static boolean hasCodes(final Response response, final int... codes) {
-    return Arrays.stream(codes).filter(c -> c == response.getStatusCode()).toArray().length > 0;
-  }
-
-  private static AccountManager createAccountManager(final List<Header> headers, final String host) {
-    for (Header header : headers) {
-      if (header.getName().equalsIgnoreCase("x-gateway-auth")) {
-        var authStr = ((ExtensionHeader) header).getValue();
-        var auth = new String(Base64.getDecoder().decode(authStr));
-
-        if (auth.split(":").length != 2) {
-          throw new IllegalArgumentException(
-              "invalid 'x-gateway-auth' header value; should be base64('username:password')");
-        }
-
-        var username = auth.split(":")[0];
-        var password = auth.split(":")[1];
-        return new AccountManagerImpl(username, password, host);
-      }
-    }
-    return null;
-  }
 
   public void processRequest(final RequestEvent event) {
     Request req = event.getRequest();
@@ -274,9 +197,9 @@ public class GRPCSipListener implements SipListener {
 
       // WARNING: The Expires always returns zero. Should check if this is a bug
       if (isRequest && method.equals(Request.INVITE)) {
-        processCallStartedEvent(response);
+        eventProcessor.processCallStartedEvent(response);
       } else if (isRequest && method.equals(Request.CANCEL)) {
-        processCallEndedEvent(response);
+        eventProcessor.processCallEndedEvent(response);
       } else if (!isRequest && method.equals(Request.REGISTER) 
         && response.getMessage().getResponseType().equals(ResponseType.OK)) {
 
@@ -286,7 +209,7 @@ public class GRPCSipListener implements SipListener {
 
         // WARNING: The Expires from the MessageRequest always returns zero. 
         // Should check if this is a bug.
-        processRegistrationEvent(request, expires);
+        eventProcessor.processRegistrationEvent(request, expires);
       }
 
       // This is needed so that processors can send responses to the client 
@@ -349,13 +272,13 @@ public class GRPCSipListener implements SipListener {
     try {
       Response res = event.getResponse();
 
-      if (isStackJob(res)) {
+      if (ResponseHelper.isStackJob(res)) {
         return;
       }
 
-      var isTransactional = isTransactional(event);
+      var isTransactional = ResponseHelper.isTransactional(event, res);
 
-      if (isTransactional && authenticationRequired(res)) {
+      if (isTransactional && AuthenticationHandler.authenticationRequired(res)) {
         var accountManager = (AccountManager) event.getClientTransaction().getApplicationData();
 
         if (accountManager != null) {
@@ -364,8 +287,11 @@ public class GRPCSipListener implements SipListener {
 
           LOG.debug("authenticating on behalf of callId: {}", callId);
 
-          var sipStack = (SipStackExt) this.sipProvider.getSipStack();
-          handleAuthChallenge(sipStack, event, accountManager);
+          ClientTransaction newClientTransaction = authenticationHandler.handleAuthChallenge(event, accountManager);
+          if (newClientTransaction != null) {
+            // Update activeTransactions with the new authenticated transaction
+            transactionManager.updateClientTransaction(callId.getCallId(), newClientTransaction);
+          }
           return;
         }
       }
@@ -375,9 +301,9 @@ public class GRPCSipListener implements SipListener {
       MessageResponse response = blockingStub.processMessage(request);
       List<Header> headers = MessageConverter.createHeadersFromMessage(response.getMessage());
 
-      if (hasMethod(res, Request.BYE) ||
-          (hasMethod(res, Request.INVITE) && res.getStatusCode() > 300)) {
-        processCallEndedEvent(response);
+      if (ResponseHelper.hasMethod(res, Request.BYE) ||
+          (ResponseHelper.hasMethod(res, Request.INVITE) && res.getStatusCode() > 300)) {
+        eventProcessor.processCallEndedEvent(response);
       } 
 
       // Update reason phrase
@@ -391,11 +317,7 @@ public class GRPCSipListener implements SipListener {
       }
 
       // Removing headers to avoid duplicates
-      res.removeHeader(Via.NAME);
-      res.removeHeader(Contact.NAME);
-      res.removeHeader(Route.NAME);
-      res.removeHeader(RecordRoute.NAME);
-      res.removeHeader(WWWAuthenticateHeader.NAME);
+      ResponseHelper.removeHeadersToReplace(res);
 
       for (Header header : headers) {
         // WARNING: Using setHeader causes some headers to be overwritten
@@ -405,29 +327,27 @@ public class GRPCSipListener implements SipListener {
       if (isTransactional) {
         var req = event.getClientTransaction().getRequest();
         var callId = (CallIdHeader) req.getHeader(CallIdHeader.NAME);
-        var originalServerTransaction = (ServerTransaction) this.activeTransactions.get(callId.getCallId() + "_server");
+        var originalServerTransaction = transactionManager.getServerTransaction(callId.getCallId());
+        boolean isWebSocket = TransportDetector.isWebSocketTransport(req);
+        
         if (originalServerTransaction != null) {
           // The response CSeq number must be the same as the original request CSeq number
           var originalCSeq = (CSeqHeader) originalServerTransaction.getRequest().getHeader(CSeqHeader.NAME);
           res.setHeader(originalCSeq);
-          originalServerTransaction.sendResponse(res);
+          SipMessageSender.sendResponse(originalServerTransaction, res, isWebSocket);
         } else if (res.getHeader(ViaHeader.NAME) != null) {
-          sendResponseWithTimeout(() -> {
-            try {
-              this.sipProvider.sendResponse(res);
-            } catch (SipException e) {
-              throw new RuntimeException(e);
-            }
-          }, "sipProvider");
+          SipMessageSender.sendResponse(sipProvider, res, isWebSocket);
         }
       } else if (res.getHeader(ViaHeader.NAME) != null) {
-        sendResponseWithTimeout(() -> {
-          try {
-            this.sipProvider.sendResponse(res);
-          } catch (SipException e) {
-            throw new RuntimeException(e);
-          }
-        }, "sipProvider");
+        // For non-transactional responses, we need to check the Via header from the response
+        // Since we don't have the original request, we'll use a conservative approach
+        boolean isWebSocket = false;
+        ViaHeader viaHeader = (ViaHeader) res.getHeader(ViaHeader.NAME);
+        if (viaHeader != null && viaHeader.getTransport() != null) {
+          String transport = viaHeader.getTransport().toLowerCase();
+          isWebSocket = "ws".equals(transport) || "wss".equals(transport);
+        }
+        SipMessageSender.sendResponse(sipProvider, res, isWebSocket);
       }
     } catch (SipException | InvalidArgumentException | ParseException e) {
       var req = event.getClientTransaction().getRequest();
@@ -443,8 +363,9 @@ public class GRPCSipListener implements SipListener {
     if (transaction != null) {
       var request = transaction.getRequest();
       var callId = (CallIdHeader) request.getHeader(CallIdHeader.NAME);
-      activeTransactions.remove(callId.getCallId() + "_client");
-      activeTransactions.remove(callId.getCallId() + "_server");
+      if (callId != null) {
+        transactionManager.removeTransactions(callId.getCallId());
+      }
     }
   }
 
@@ -455,8 +376,9 @@ public class GRPCSipListener implements SipListener {
     if (transaction != null) {
       var request = transaction.getRequest();
       var callId = (CallIdHeader) request.getHeader(CallIdHeader.NAME);
-      activeTransactions.remove(callId.getCallId() + "_client");
-      activeTransactions.remove(callId.getCallId() + "_server");
+      if (callId != null) {
+        transactionManager.removeTransactions(callId.getCallId());
+      }
     }
   }
 
@@ -471,27 +393,10 @@ public class GRPCSipListener implements SipListener {
     LOG.warn("transport error on {}:{} via {}; cleaning up related transactions.", host, port, transport);
 
     // Find and remove all transactions associated with this transport, host, port combo
-    List<String> toRemove = new ArrayList<>();
-    List<Transaction> removedTransactions = new ArrayList<>();
-    for (Map.Entry<String, Transaction> entry : activeTransactions.entrySet()) {
-      Transaction tx = entry.getValue();
-      if (tx != null && tx.getRequest() != null) {
-        ViaHeader via = (ViaHeader) tx.getRequest().getHeader(ViaHeader.NAME);
-        if (via != null &&
-            transport.equalsIgnoreCase(via.getTransport()) &&
-            host.equals(via.getHost()) &&
-            port == via.getPort()) {
-          toRemove.add(entry.getKey());
-          removedTransactions.add(tx);
-        }
-      }
-    }
+    List<Transaction> removedTransactions = transactionManager.removeTransactionsByTransport(transport, host, port);
 
-    for (int i = 0; i < toRemove.size(); i++) {
-      String key = toRemove.get(i);
-      Transaction tx = removedTransactions.get(i);
-      activeTransactions.remove(key);
-      LOG.info("removed transaction {} due to transport error on {}:{} via {}", key, host, port, transport);
+    for (Transaction tx : removedTransactions) {
+      LOG.info("removed transaction due to transport error on {}:{} via {}", host, port, transport);
       // Fire call-ended event if possible
       try {
         Request req = tx.getRequest();
@@ -504,14 +409,14 @@ public class GRPCSipListener implements SipListener {
             io.routr.message.CallID callId = io.routr.message.CallID.newBuilder().setCallId(callIdHeader.getCallId()).build();
             io.routr.message.SIPMessage sipMsg = io.routr.message.SIPMessage.newBuilder().setCallId(callId).build();
             MessageResponse dummyResponse = MessageResponse.newBuilder().setMessage(sipMsg).build();
-            processCallEndedEvent(dummyResponse);
+            eventProcessor.processCallEndedEvent(dummyResponse);
           }
         }
       } catch (Exception e) {
-        LOG.warn("failed to fire call-ended event for transaction {}: {}", key, e.getMessage());
+        LOG.warn("failed to fire call-ended event for transaction: {}", e.getMessage());
       }
     }
-    if (toRemove.isEmpty()) {
+    if (removedTransactions.isEmpty()) {
       LOG.info("no active transactions matched the transport error on {}:{} via {}", host, port, transport);
     }
   }
@@ -519,11 +424,11 @@ public class GRPCSipListener implements SipListener {
   private void sendRequest(final ServerTransaction serverTransaction, final Request request,
       final List<Header> headers) {
     try {
-      Request requestOut = updateRequest(request, headers);
+      Request requestOut = RequestUpdater.updateRequest(request, headers);
       var callId = (CallIdHeader) requestOut.getHeader(CallIdHeader.NAME);
       // Does not need a transaction
       if (requestOut.getMethod().equals(Request.ACK)) {
-        var transaction = this.activeTransactions.get(callId.getCallId() + "_client");
+        var transaction = transactionManager.getClientTransaction(callId.getCallId());
         // If appData is set increase the CSeq for the Ack request
         // This handles the case when proxy authenticates on behalf of caller
         // After authentication, the INVITE CSeq is incremented, so ACK CSeq must also be incremented
@@ -543,10 +448,9 @@ public class GRPCSipListener implements SipListener {
 
       // Setting authentication artifact
       var host = ((SipURI) requestOut.getRequestURI()).getHost();
-      clientTransaction.setApplicationData(createAccountManager(headers, host));
+      clientTransaction.setApplicationData(AuthenticationHandler.createAccountManager(headers, host));
       clientTransaction.sendRequest();
-      this.activeTransactions.put(callId.getCallId() + "_client", clientTransaction);
-      this.activeTransactions.put(callId.getCallId() + "_server", serverTransaction);
+      transactionManager.putTransactions(callId.getCallId(), clientTransaction, serverTransaction);
     } catch (SipException e) {
       var callId = (CallIdHeader) request.getHeader(CallIdHeader.NAME);
       LOG.debug("an exception occurred while sending request with callId: {}", callId, e);
@@ -556,8 +460,8 @@ public class GRPCSipListener implements SipListener {
   private void sendCancel(final ServerTransaction serverTransaction, final Request request) {
     try {
       var callId = (CallIdHeader) request.getHeader(CallIdHeader.NAME);
-      var originalClientTransaction = (ClientTransaction) this.activeTransactions.get(callId.getCallId() + "_client");
-      var originalServerTransaction = (ServerTransaction) this.activeTransactions.get(callId.getCallId() + "_server");
+      var originalClientTransaction = transactionManager.getClientTransaction(callId.getCallId());
+      var originalServerTransaction = transactionManager.getServerTransaction(callId.getCallId());
 
       // Let client know we are processing the request
       var cancelResponse = this.messageFactory.createResponse(
@@ -612,28 +516,19 @@ public class GRPCSipListener implements SipListener {
     }
 
     // Check if this is a WebSocket/WSS connection to prevent recursive loop
-    boolean isWebSocket = isWebSocketTransport(request);
+    boolean isWebSocket = TransportDetector.isWebSocketTransport(request);
     var callId = (CallIdHeader) request.getHeader(CallIdHeader.NAME);
     var method = request.getMethod();
     
     if (isWebSocket) {
       LOG.debug("sending response for {} via WebSocket/WSS transport for callId: {}, method: {}", 
           type, callId != null ? callId.getCallId() : "unknown", method);
-      // Use sendResponseWithTimeout for WebSocket connections to prevent StackOverflowError
-      // This wraps the send in a timeout executor which helps prevent recursive loops
-      sendResponseWithTimeout(() -> {
-        try {
-          transaction.sendResponse(response);
-        } catch (SipException | InvalidArgumentException e) {
-          throw new RuntimeException(e);
-        }
-      }, "serverTransaction");
-    } else {
-      transaction.sendResponse(response);
     }
+    
+    SipMessageSender.sendResponse(transaction, response, isWebSocket);
 
-    var originalClientTransaction = (ClientTransaction) this.activeTransactions.get(callId.getCallId() + "_client");
-    var originalServerTransaction = (ServerTransaction) this.activeTransactions.get(callId.getCallId() + "_server");
+    var originalClientTransaction = transactionManager.getClientTransaction(callId.getCallId());
+    var originalServerTransaction = transactionManager.getServerTransaction(callId.getCallId());
 
     if (request.getMethod().equals(Request.CANCEL) && originalClientTransaction != null) {
       var re = ((ExtensionHeader) response.getHeader("x-request-uri")).getValue();
@@ -653,153 +548,4 @@ public class GRPCSipListener implements SipListener {
     }
   }
 
-  private void handleAuthChallenge(final SipStackExt sipStack, final ResponseEvent event,
-      final AccountManager accountManager) {
-    var authHelper = sipStack.getAuthenticationHelper(accountManager, this.headerFactory);
-    // Setting looseRouting to false will cause
-    // https://github.com/fonoster/routr/issues/18
-    try {
-      var newClientTransaction = authHelper.handleChallenge(event.getResponse(), event.getClientTransaction(),
-          (SipProvider) event.getSource(), 5, true);
-      
-      // Set ApplicationData on the new transaction so ACK increment logic can detect authentication
-      newClientTransaction.setApplicationData(accountManager);
-      newClientTransaction.sendRequest();
-      
-      // Update activeTransactions with the new authenticated transaction
-      // This ensures ACK requests can find the correct transaction with ApplicationData
-      var request = event.getClientTransaction().getRequest();
-      var callId = (CallIdHeader) request.getHeader(CallIdHeader.NAME);
-      this.activeTransactions.put(callId.getCallId() + "_client", newClientTransaction);
-    } catch (NullPointerException | SipException e) {
-      var request = event.getClientTransaction().getRequest();
-      var callId = (CallIdHeader) request.getHeader(CallIdHeader.NAME);
-      LOG.debug("an exception occurred while handling authentication challenge for callId: {}", callId, e);
-    }
-  }
-
-  private void processCallStartedEvent(final MessageResponse response) {
-    var startTime = ZonedDateTime.now(ZoneOffset.UTC)
-        .truncatedTo(ChronoUnit.MILLIS)
-        .format(DateTimeFormatter.ISO_INSTANT);
-    var callId = response.getMessage().getCallId().getCallId();
-    var from = response.getMessage().getFrom().getAddress().getUri();
-    var to = response.getMessage().getTo().getAddress().getUri();
-    var callStartedEvent = new HashMap<String, Object>();
-
-    callStartedEvent.put("callId", callId);
-    callStartedEvent.put("from", "sip:" + from.getUser() + "@" + from.getHost());
-    callStartedEvent.put("to", "sip:" + to.getUser() + "@" + to.getHost());
-    callStartedEvent.put("startTime", startTime);
-    callStartedEvent.put("extraHeaders", getExtraHeaders(response.getMessage()));
-    callStartedEvent.putAll(response.getMetadataMap());
-
-    publishEvent(EventTypes.CALL_STARTED.getType(), callStartedEvent);
-  }
-
-  private void processCallEndedEvent(final MessageResponse request) {
-    var endTime = ZonedDateTime.now(ZoneOffset.UTC)
-        .truncatedTo(ChronoUnit.MILLIS)
-        .format(DateTimeFormatter.ISO_INSTANT);
-    var callId = request.getMessage().getCallId().getCallId();
-    var callEndedEvent = new HashMap<String, Object>();
-    var type = ResponseCode.valueOf(request.getMessage().getResponseType().name());
-
-    int code = type.equals(ResponseCode.UNKNOWN) ? ResponseCode.OK.getCode() : type.getCode();
-    var cause = HangupCauses.get(code);
-
-    callEndedEvent.put("callId", callId);
-    callEndedEvent.put("endTime", endTime);
-    callEndedEvent.put("hangupCause", cause);
-    callEndedEvent.put("extraHeaders", getExtraHeaders(request.getMessage()));
-
-    publishEvent(EventTypes.CALL_ENDED.getType(), callEndedEvent);
-  }
-
-  private void processRegistrationEvent(final MessageRequest request, final int expires) {
-    var registeredAt = ZonedDateTime.now(ZoneOffset.UTC)
-        .truncatedTo(ChronoUnit.MILLIS)
-        .format(DateTimeFormatter.ISO_INSTANT);
-    var uri = request.getMessage().getFrom().getAddress().getUri();
-    var registrationEvent = new HashMap<String, Object>();
-
-    registrationEvent.put("aor", "sip:" + uri.getUser() + "@" + uri.getHost());
-    registrationEvent.put("registeredAt", registeredAt);
-    registrationEvent.put("expires", expires);
-    registrationEvent.put("extraHeaders", getExtraHeaders(request.getMessage()));
-
-    publishEvent(EventTypes.ENDPOINT_REGISTERED.getType(), registrationEvent);
-  }
-
-  private HashMap<String, String> getExtraHeaders(final SIPMessage message) {
-    var extraHeaders = new HashMap<String, String>();
-    List<Extension> extensions = message.getExtensionsList();
-
-    for (Extension extension : extensions) {
-      String name = extension.getName();
-      if (name.toLowerCase().startsWith("x-")) {
-        String value = extension.getValue();
-        extraHeaders.put(name, value);
-      }
-    }
-
-    return extraHeaders;
-  }
-
-  private void publishEvent(String eventName, Map<String, Object> message) {
-    publishers.stream().forEach(publisher -> publisher.publish(eventName, message));
-  }
-
-  /**
-   * Sends a SIP response with a timeout wrapper to prevent blocking and handle connection issues.
-   * This method is particularly important for WebSocket/WSS connections to prevent StackOverflowError
-   * caused by recursive connection establishment loops.
-   * 
-   * @param sendOperation The operation to execute (either sipProvider.sendResponse or transaction.sendResponse)
-   * @param context Context string for logging purposes
-   */
-  private void sendResponseWithTimeout(Runnable sendOperation, String context) {
-    ExecutorService executor = Executors.newSingleThreadExecutor();
-    Future<?> future = executor.submit(() -> {
-      try {
-        sendOperation.run();
-      } catch (Exception e) {
-        LOG.error("Exception sending SIP response via " + context, e);
-      }
-    });
-
-    try {
-      future.get(5, TimeUnit.SECONDS);
-      LOG.debug("Response sent via " + context + " successfully");
-    } catch (TimeoutException e) {
-      LOG.warn("sendResponse() timed out via " + context + " — client likely disconnected");
-      future.cancel(true);
-    } catch (Exception e) {
-      LOG.error("Exception during sendResponse execution via " + context, e);
-    } finally {
-      executor.shutdown();
-    }
-  }
-
-  /**
-   * Checks if the request is using WebSocket or WSS transport.
-   * This is determined by examining the Via header transport parameter.
-   * 
-   * @param request The SIP request to check
-   * @return true if the transport is WS or WSS, false otherwise
-   */
-  private static boolean isWebSocketTransport(Request request) {
-    ViaHeader viaHeader = (ViaHeader) request.getHeader(ViaHeader.NAME);
-    if (viaHeader == null) {
-      return false;
-    }
-    
-    String transport = viaHeader.getTransport();
-    if (transport == null) {
-      return false;
-    }
-    
-    String transportLower = transport.toLowerCase();
-    return "ws".equals(transportLower) || "wss".equals(transportLower);
-  }
 }
