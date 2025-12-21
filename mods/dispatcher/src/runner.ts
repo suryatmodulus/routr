@@ -3,7 +3,7 @@
  * Copyright (C) 2026 by Fonoster Inc (https://fonoster.com)
  * http://github.com/fonoster/routr
  *
- * This file is part of Routr
+ * This file is part of Routr.
  *
  * Licensed under the MIT License (the "License");
  * you may not use this file except in compliance with
