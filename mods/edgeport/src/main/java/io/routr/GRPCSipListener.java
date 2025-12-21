@@ -412,10 +412,22 @@ public class GRPCSipListener implements SipListener {
           res.setHeader(originalCSeq);
           originalServerTransaction.sendResponse(res);
         } else if (res.getHeader(ViaHeader.NAME) != null) {
-          sendResponseWithTimeout(this.sipProvider, res, "sipProvider");
+          sendResponseWithTimeout(() -> {
+            try {
+              this.sipProvider.sendResponse(res);
+            } catch (SipException e) {
+              throw new RuntimeException(e);
+            }
+          }, "sipProvider");
         }
       } else if (res.getHeader(ViaHeader.NAME) != null) {
-        sendResponseWithTimeout(this.sipProvider, res, "sipProvider");
+        sendResponseWithTimeout(() -> {
+          try {
+            this.sipProvider.sendResponse(res);
+          } catch (SipException e) {
+            throw new RuntimeException(e);
+          }
+        }, "sipProvider");
       }
     } catch (SipException | InvalidArgumentException | ParseException e) {
       var req = event.getClientTransaction().getRequest();
@@ -597,9 +609,27 @@ public class GRPCSipListener implements SipListener {
       response.setContent(body, contentTypeHeader);
     }
 
-    transaction.sendResponse(response);
-
+    // Check if this is a WebSocket/WSS connection to prevent recursive loop
+    boolean isWebSocket = isWebSocketTransport(request);
     var callId = (CallIdHeader) request.getHeader(CallIdHeader.NAME);
+    var method = request.getMethod();
+    
+    if (isWebSocket) {
+      LOG.debug("sending response for {} via WebSocket/WSS transport for callId: {}, method: {}", 
+          type, callId != null ? callId.getCallId() : "unknown", method);
+      // Use sendResponseWithTimeout for WebSocket connections to prevent StackOverflowError
+      // This wraps the send in a timeout executor which helps prevent recursive loops
+      sendResponseWithTimeout(() -> {
+        try {
+          transaction.sendResponse(response);
+        } catch (SipException | InvalidArgumentException e) {
+          throw new RuntimeException(e);
+        }
+      }, "serverTransaction");
+    } else {
+      transaction.sendResponse(response);
+    }
+
     var originalClientTransaction = (ClientTransaction) this.activeTransactions.get(callId.getCallId() + "_client");
     var originalServerTransaction = (ServerTransaction) this.activeTransactions.get(callId.getCallId() + "_server");
 
@@ -708,11 +738,19 @@ public class GRPCSipListener implements SipListener {
     publishers.stream().forEach(publisher -> publisher.publish(eventName, message));
   }
 
-  private void sendResponseWithTimeout(SipProvider sipProvider, Response response, String context) {
+  /**
+   * Sends a SIP response with a timeout wrapper to prevent blocking and handle connection issues.
+   * This method is particularly important for WebSocket/WSS connections to prevent StackOverflowError
+   * caused by recursive connection establishment loops.
+   * 
+   * @param sendOperation The operation to execute (either sipProvider.sendResponse or transaction.sendResponse)
+   * @param context Context string for logging purposes
+   */
+  private void sendResponseWithTimeout(Runnable sendOperation, String context) {
     ExecutorService executor = Executors.newSingleThreadExecutor();
     Future<?> future = executor.submit(() -> {
       try {
-        sipProvider.sendResponse(response);
+        sendOperation.run();
       } catch (Exception e) {
         LOG.error("Exception sending SIP response via " + context, e);
       }
@@ -729,5 +767,27 @@ public class GRPCSipListener implements SipListener {
     } finally {
       executor.shutdown();
     }
+  }
+
+  /**
+   * Checks if the request is using WebSocket or WSS transport.
+   * This is determined by examining the Via header transport parameter.
+   * 
+   * @param request The SIP request to check
+   * @return true if the transport is WS or WSS, false otherwise
+   */
+  private static boolean isWebSocketTransport(Request request) {
+    ViaHeader viaHeader = (ViaHeader) request.getHeader(ViaHeader.NAME);
+    if (viaHeader == null) {
+      return false;
+    }
+    
+    String transport = viaHeader.getTransport();
+    if (transport == null) {
+      return false;
+    }
+    
+    String transportLower = transport.toLowerCase();
+    return "ws".equals(transportLower) || "wss".equals(transportLower);
   }
 }
