@@ -523,16 +523,18 @@ public class GRPCSipListener implements SipListener {
       var callId = (CallIdHeader) requestOut.getHeader(CallIdHeader.NAME);
       // Does not need a transaction
       if (requestOut.getMethod().equals(Request.ACK)) {
-        // var transaction = this.activeTransactions.get(callId.getCallId() + "_client");
-        // // If appData is set increase the CSeq for the Ack request
-        // if (transaction != null && transaction.getApplicationData() != null) {
-        //   var cSeq = (CSeqHeader) requestOut.getHeader(CSeqHeader.NAME);
-        //   try {
-        //     cSeq.setSeqNumber(cSeq.getSeqNumber() + 1);
-        //   } catch (InvalidArgumentException e) {
-        //     LOG.debug("an exception occurred while processing callId: {}", callId, e);
-        //   }
-        // }
+        var transaction = this.activeTransactions.get(callId.getCallId() + "_client");
+        // If appData is set increase the CSeq for the Ack request
+        // This handles the case when proxy authenticates on behalf of caller
+        // After authentication, the INVITE CSeq is incremented, so ACK CSeq must also be incremented
+        if (transaction != null && transaction.getApplicationData() != null) {
+          var cSeq = (CSeqHeader) requestOut.getHeader(CSeqHeader.NAME);
+          try {
+            cSeq.setSeqNumber(cSeq.getSeqNumber() + 1);
+          } catch (InvalidArgumentException e) {
+            LOG.debug("an exception occurred while processing callId: {}", callId, e);
+          }
+        }
         this.sipProvider.sendRequest(requestOut);
         return;
       }
@@ -657,8 +659,18 @@ public class GRPCSipListener implements SipListener {
     // Setting looseRouting to false will cause
     // https://github.com/fonoster/routr/issues/18
     try {
-      authHelper.handleChallenge(event.getResponse(), event.getClientTransaction(),
-          (SipProvider) event.getSource(), 5, true).sendRequest();
+      var newClientTransaction = authHelper.handleChallenge(event.getResponse(), event.getClientTransaction(),
+          (SipProvider) event.getSource(), 5, true);
+      
+      // Set ApplicationData on the new transaction so ACK increment logic can detect authentication
+      newClientTransaction.setApplicationData(accountManager);
+      newClientTransaction.sendRequest();
+      
+      // Update activeTransactions with the new authenticated transaction
+      // This ensures ACK requests can find the correct transaction with ApplicationData
+      var request = event.getClientTransaction().getRequest();
+      var callId = (CallIdHeader) request.getHeader(CallIdHeader.NAME);
+      this.activeTransactions.put(callId.getCallId() + "_client", newClientTransaction);
     } catch (NullPointerException | SipException e) {
       var request = event.getClientTransaction().getRequest();
       var callId = (CallIdHeader) request.getHeader(CallIdHeader.NAME);
