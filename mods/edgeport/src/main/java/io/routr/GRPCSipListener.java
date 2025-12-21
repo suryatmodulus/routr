@@ -289,11 +289,28 @@ public class GRPCSipListener implements SipListener {
         processRegistrationEvent(request, expires);
       }
 
-      // Forwarding SIP response to the client
+      // This is needed so that processors can send responses to the client 
+      // that include body content.
       if (!isRequest) {
         assert serverTransaction != null;
+        String body = response.getMessage().getBody();
+        ContentTypeHeader contentTypeHeader = null;
+        
+        // Try to get ContentTypeHeader from the response headers first
+        for (Header header : headers) {
+          if (header instanceof ContentTypeHeader) {
+            contentTypeHeader = (ContentTypeHeader) header;
+            break;
+          }
+        }
+        
+        // If not in headers, try to get from original request
+        if (contentTypeHeader == null && req.getHeader(ContentTypeHeader.NAME) != null) {
+          contentTypeHeader = (ContentTypeHeader) req.getHeader(ContentTypeHeader.NAME);
+        }
+        
         this.sendResponse(serverTransaction, response.getMessage().getResponseType(), headers,
-            response.getMessage().getReasonPhrase());
+            response.getMessage().getReasonPhrase(), body, contentTypeHeader);
         return;
       }
 
@@ -561,7 +578,8 @@ public class GRPCSipListener implements SipListener {
   }
 
   private void sendResponse(final ServerTransaction transaction, final ResponseType type,
-      final List<Header> headers, final String reasonPhrase)
+      final List<Header> headers, final String reasonPhrase, final String body,
+      final ContentTypeHeader contentTypeHeader)
       throws ParseException, InvalidArgumentException, SipException {
     Request request = transaction.getRequest();
     Response response = this.messageFactory.createResponse(ResponseCode.valueOf(type.name()).getCode(), request);
@@ -572,6 +590,11 @@ public class GRPCSipListener implements SipListener {
 
     for (Header header : headers) {
       response.addHeader(header);
+    }
+
+    // Set body content if provided
+    if (body != null && !body.isEmpty() && contentTypeHeader != null) {
+      response.setContent(body, contentTypeHeader);
     }
 
     transaction.sendResponse(response);
