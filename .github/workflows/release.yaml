@@ -33,7 +33,9 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20.x"
+          node-version: "22.x"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@routr"
       - name: Build project
         run: npm run make
       - name: Check for next release
@@ -43,11 +45,10 @@ jobs:
           echo "RELEASE=$release" >> $GITHUB_ENV
       - name: Publish packages to NPM
         if: env.RELEASE != 'none'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          echo "NPM_TOKEN=${{ secrets.NPM_TOKEN }}" >> $GITHUB_ENV
           echo "GITHUB_TOKEN=${{ secrets.GH_PAT }}" >> $GITHUB_ENV
-          echo "@routr:registry=https://registry.npmjs.org/" > .npmrc
-          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" >> .npmrc
 
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"

@@ -19,6 +19,8 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: "20.x"
+        registry-url: "https://registry.npmjs.org"
+        scope: "@routr"
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
@@ -28,9 +30,8 @@ jobs:
         npx lerna list --json > pckg-list.json
     - name: Tag latest npm packages
       env:
-        NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       run: |
-        echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > .npmrc
         PACKAGE_DATA=$(cat pckg-list.json)
         PACKAGE_COUNT=$(echo "$PACKAGE_DATA" | jq length)
         for i in $(seq 0 $(($PACKAGE_COUNT-1))); do
