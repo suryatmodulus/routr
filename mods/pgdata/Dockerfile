@@ -20,6 +20,7 @@ COPY mods/pgdata .
 # Todo: We need to normalize user id and group id across all images
 RUN chmod +x /generate-certs.sh \
   && apk add --no-cache cmake g++ git make nodejs npm openssl python3 tini \
+  && npm install -g prisma@6.12.0 \
   && npm pack \
   && npm install -g routr-*.tgz \
   && cp schema.prisma /usr/local/lib/node_modules/@routr/pgdata/ \
@@ -47,10 +48,10 @@ WORKDIR /db
 
 RUN apk add --no-cache postgresql-client
 
-COPY package.json package-lock.json* ./
+COPY mods/pgdata/package.json mods/pgdata/package-lock.json* ./
 RUN npm install --omit=dev
 
-COPY migrations migrations
-COPY schema.prisma .
+COPY mods/pgdata/migrations migrations
+COPY mods/pgdata/schema.prisma .
 
 CMD ["npx", "prisma@6.12.0", "migrate", "deploy"]
