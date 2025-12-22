@@ -1,7 +1,7 @@
 ##
 # Build and pack the service
 ##
-FROM alpine:3.22 AS builder
+FROM alpine:3.23 AS builder
 LABEL maintainer="Pedro Sanders <psanders@fonoster.com>"
 
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
@@ -24,7 +24,7 @@ RUN chmod +x heplify
 ##  
 #  Runner
 ##
-FROM alpine:3.22 AS runner
+FROM alpine:3.23 AS runner
 
 ARG PKCS12_PASSWORD="changeme"
 ARG POSTGRES_USER="postgres"
