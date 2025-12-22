@@ -25,7 +25,7 @@
     "@opentelemetry/semantic-conventions": "^1.0.4",
     "@routr/common": "^2.13.17",
     "fp-ts": "^2.11.8",
-    "phone": "^3.1.32"
+    "phone": "^3.1.68"
   },
   "directories": {
     "src": "src",

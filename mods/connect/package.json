@@ -31,10 +31,10 @@
     "@routr/common": "^2.13.17",
     "@routr/location": "^2.13.18",
     "@routr/processor": "^2.13.17",
-    "jsonwebtoken": "^9.0.0"
+    "jsonwebtoken": "^9.0.3"
   },
   "devDependencies": {
-    "@types/jsonwebtoken": "^9.0.1"
+    "@types/jsonwebtoken": "^9.0.10"
   },
   "files": [
     "dist"
