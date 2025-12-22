@@ -45,10 +45,12 @@ FROM node:18-alpine3.19 AS migrations
 
 WORKDIR /db
 
-RUN npm install --location=global prisma@latest \
-  && apk add --no-cache postgresql-client
+RUN apk add --no-cache postgresql-client
 
-COPY mods/pgdata/migrations migrations
-COPY mods/pgdata/schema.prisma .
+COPY package.json package-lock.json* ./
+RUN npm install --omit=dev
 
-CMD ["prisma", "migrate", "deploy"]
+COPY migrations migrations
+COPY schema.prisma .
+
+CMD ["npx", "prisma", "migrate", "deploy"]

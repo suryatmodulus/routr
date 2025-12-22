@@ -67,7 +67,6 @@ COPY --from=builder /work/jre jre
 COPY --from=builder /work/heplify /usr/local/bin/
 
 RUN apk add --no-cache libcap nodejs npm openssl postgresql sed sngrep su-exec tini \
-  && npm install -g prisma@latest \
   && mkdir -p ${PATH_TO_CERTS} /var/lib/postgresql/data /run/postgresql /root/.npm \
   && addgroup -g ${GID} ${USER} \
   && adduser --disabled-password --gecos "" --ingroup ${USER} --home ${HOME} --uid ${UID} ${USER} \
@@ -90,7 +89,7 @@ CMD ["/bin/sh", "-c", "if [ \"$START_INTERNAL_DB\" = \"true\" ]; then \
   if [ -n \"$HEPLIFY_OPTIONS\" ]; then \
     heplify $HEPLIFY_OPTIONS & \
   fi; \
-  npx prisma migrate deploy --schema=/service/schema.prisma; \
+  cd node_modules/@routr/pgdata && npx prisma migrate deploy --schema=/service/schema.prisma && cd /service; \
   sed -i \"s|keyStorePassword:.*|keyStorePassword: $PKCS12_PASSWORD|g\" config/edgeport.yaml; \
   sed -i \"s|trustStorePassword:.*|trustStorePassword: $PKCS12_PASSWORD|g\" config/edgeport.yaml; \
   su-exec $USER ./convert-to-p12.sh $PATH_TO_CERTS $PKCS12_PASSWORD; \
