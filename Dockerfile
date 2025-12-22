@@ -15,7 +15,7 @@ RUN apk add --no-cache --update cmake curl g++ git make nodejs npm openjdk17-jdk
   && sh custom-jre.sh \
   && npm install --omit=dev \
   && mv schema.prisma node_modules/@routr/pgdata/ \
-  && cd node_modules/@routr/pgdata/ && npx prisma generate \
+  && cd node_modules/@routr/pgdata/ && npx prisma@6.12.0 generate \
   && cd /work && curl -sf https://gobinaries.com/tj/node-prune | sh && node-prune 
 
 ADD https://github.com/sipcapture/heplify/releases/download/v1.67.0/heplify /work/heplify
@@ -89,7 +89,7 @@ CMD ["/bin/sh", "-c", "if [ \"$START_INTERNAL_DB\" = \"true\" ]; then \
   if [ -n \"$HEPLIFY_OPTIONS\" ]; then \
     heplify $HEPLIFY_OPTIONS & \
   fi; \
-  cd node_modules/@routr/pgdata && npx prisma migrate deploy --schema=/service/schema.prisma && cd /service; \
+  cd node_modules/@routr/pgdata && npx prisma@6.12.0 migrate deploy --schema=/service/schema.prisma && cd /service; \
   sed -i \"s|keyStorePassword:.*|keyStorePassword: $PKCS12_PASSWORD|g\" config/edgeport.yaml; \
   sed -i \"s|trustStorePassword:.*|trustStorePassword: $PKCS12_PASSWORD|g\" config/edgeport.yaml; \
   su-exec $USER ./convert-to-p12.sh $PATH_TO_CERTS $PKCS12_PASSWORD; \

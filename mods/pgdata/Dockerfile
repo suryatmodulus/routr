@@ -24,7 +24,7 @@ RUN chmod +x /generate-certs.sh \
   && npm install -g routr-*.tgz \
   && cp schema.prisma /usr/local/lib/node_modules/@routr/pgdata/ \
   && cd /usr/local/lib/node_modules/@routr/pgdata/ \
-  && npx prisma generate \
+  && npx prisma@6.12.0 generate \
   && ln -s /usr/local/bin/run_pgdata /usr/local/bin/run \
   && apk del git python3 make cmake g++ npm \
   && mkdir -p ${PATH_TO_CERTS} \
@@ -53,4 +53,4 @@ RUN npm install --omit=dev
 COPY migrations migrations
 COPY schema.prisma .
 
-CMD ["npx", "prisma", "migrate", "deploy"]
+CMD ["npx", "prisma@6.12.0", "migrate", "deploy"]
