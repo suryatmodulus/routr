@@ -1,6 +1,6 @@
 {
   "name": "@routr/echo",
-  "version": "2.13.17",
+  "version": "2.13.18",
   "description": "Dummy implementation of a Processor service",
   "author": "Pedro Sanders <psanders@fonoster.com>",
   "homepage": "https://github.com/fonoster/routr#readme",
