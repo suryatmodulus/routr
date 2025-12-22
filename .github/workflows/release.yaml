@@ -101,8 +101,14 @@ jobs:
       - name: SIP Connect v1.1 Compliance Tests
         if: github.event.inputs.with_tests == 'true'
         run: |
-         docker compose -f compose.yaml -f compose.dev.yaml up \
-            --build --abort-on-container-exit --exit-code-from compliance compliance
+          docker compose -f compose.yaml -f compose.dev.yaml up --build -d && \
+          sleep 60 && \
+          docker compose -f compose.yaml -f compose.dev.yaml ps && \
+          docker compose -f compose.yaml -f compose.dev.yaml up --abort-on-container-exit --exit-code-from compliance compliance
+      - name: Cleanup services
+        if: always() && github.event.inputs.with_tests == 'true'
+        run: |
+          docker compose -f compose.yaml -f compose.dev.yaml down
 
   publish-to-docker-hub:
     name: Publish to Docker Hub
