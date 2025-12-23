@@ -463,12 +463,15 @@ public class GRPCSipListener implements SipListener {
       var originalClientTransaction = transactionManager.getClientTransaction(callId.getCallId());
       var originalServerTransaction = transactionManager.getServerTransaction(callId.getCallId());
 
+      // Check if this is a WebSocket/WSS connection to prevent recursive loop
+      boolean isWebSocket = TransportDetector.isWebSocketTransport(request);
+
       // Let client know we are processing the request
       var cancelResponse = this.messageFactory.createResponse(
           Response.OK,
           serverTransaction.getRequest());
 
-      serverTransaction.sendResponse(cancelResponse);
+      SipMessageSender.sendResponse(serverTransaction, cancelResponse, isWebSocket);
 
       // Send CANCEL request to destination
       var cseq = ((CSeqHeader) originalServerTransaction.getRequest().getHeader(CSeqHeader.NAME)).getSeqNumber();
@@ -488,7 +491,7 @@ public class GRPCSipListener implements SipListener {
           Response.REQUEST_TERMINATED,
           originalServerTransaction.getRequest());
 
-      originalServerTransaction.sendResponse(terminatedResponse);
+      SipMessageSender.sendResponse(originalServerTransaction, terminatedResponse, isWebSocket);
     } catch (SipException | InvalidArgumentException | ParseException e) {
       var callId = (CallIdHeader) request.getHeader(CallIdHeader.NAME);
       LOG.debug("an exception occurred while sending a CANCEL request for callId: {}", callId, e);
@@ -541,10 +544,11 @@ public class GRPCSipListener implements SipListener {
       this.sipProvider.getNewClientTransaction(cancelRequest).sendRequest();
 
       // Sends 487 (Request terminated) back to client
+      // Use the same WebSocket detection from the original request
       var requestIn = originalServerTransaction.getRequest();
       var terminatedResponse = messageFactory
           .createResponse(Response.REQUEST_TERMINATED, requestIn);
-      originalServerTransaction.sendResponse(terminatedResponse);
+      SipMessageSender.sendResponse(originalServerTransaction, terminatedResponse, isWebSocket);
     }
   }
 

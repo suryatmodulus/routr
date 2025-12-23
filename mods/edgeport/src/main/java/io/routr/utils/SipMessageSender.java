@@ -53,6 +53,12 @@ public class SipMessageSender {
     Future<?> future = executor.submit(() -> {
       try {
         sendOperation.run();
+      } catch (StackOverflowError e) {
+        // Catch StackOverflowError specifically to prevent thread crashes
+        // This can occur in WSS connections during SSL handshake recursion
+        LOG.error("StackOverflowError detected while sending SIP response via " + context + 
+            " — likely caused by WSS connection establishment loop. This may indicate a JAIN-SIP library issue.", e);
+        throw e; // Re-throw to be caught by outer handler
       } catch (Exception e) {
         LOG.error("Exception sending SIP response via " + context, e);
       }
@@ -64,6 +70,15 @@ public class SipMessageSender {
     } catch (TimeoutException e) {
       LOG.warn("sendResponse() timed out via " + context + " — client likely disconnected");
       future.cancel(true);
+    } catch (java.util.concurrent.ExecutionException e) {
+      // Check if the cause is a StackOverflowError
+      Throwable cause = e.getCause();
+      if (cause instanceof StackOverflowError) {
+        LOG.error("StackOverflowError caught in executor for " + context + 
+            " — WSS connection may be in recursive loop. Response not sent.", cause);
+      } else {
+        LOG.error("Exception during sendResponse execution via " + context, e);
+      }
     } catch (Exception e) {
       LOG.error("Exception during sendResponse execution via " + context, e);
     } finally {

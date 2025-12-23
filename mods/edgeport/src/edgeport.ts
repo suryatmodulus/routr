@@ -33,6 +33,17 @@ import getServerProperties from "./server_properties"
 
 const GRPCSipListener = Java.type("io.routr.GRPCSipListener")
 const ArrayList = Java.type("java.util.ArrayList")
+const Thread = Java.type("java.lang.Thread")
+const ThreadExceptionHandler = Java.type("io.routr.utils.ThreadExceptionHandler")
+
+/**
+ * Sets up a default uncaught exception handler to catch StackOverflowError
+ * in JAIN-SIP internal threads (like EventScannerThread) that can occur
+ * during WSS connection establishment.
+ */
+function setupThreadExceptionHandler() {
+  Thread.setDefaultUncaughtExceptionHandler(new ThreadExceptionHandler())
+}
 
 /**
  * Starts a new Edgeport service.
@@ -43,6 +54,9 @@ export default function edgePort(config: EdgePortConfig) {
   assertNoDuplicatedProto(config.spec.transport)
   assertNoDuplicatedPort(config.spec.transport)
   assertHasSecurityContext(config)
+
+  // Set up exception handler for JAIN-SIP internal threads before creating the stack
+  setupThreadExceptionHandler()
 
   const sipStack = createSipStack(getServerProperties(config))
   const sipProvider = createSipProvider(
