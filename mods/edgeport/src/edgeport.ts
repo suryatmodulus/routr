@@ -34,7 +34,9 @@ import getServerProperties from "./server_properties"
 const GRPCSipListener = Java.type("io.routr.GRPCSipListener")
 const ArrayList = Java.type("java.util.ArrayList")
 const Thread = Java.type("java.lang.Thread")
-const ThreadExceptionHandler = Java.type("io.routr.utils.ThreadExceptionHandler")
+const ThreadExceptionHandler = Java.type(
+  "io.routr.utils.ThreadExceptionHandler"
+)
 
 /**
  * Sets up a default uncaught exception handler to catch StackOverflowError
