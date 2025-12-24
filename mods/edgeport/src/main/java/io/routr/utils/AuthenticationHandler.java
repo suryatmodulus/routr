@@ -92,7 +92,11 @@ public class AuthenticationHandler {
       
       // Set ApplicationData on the new transaction so ACK increment logic can detect authentication
       newClientTransaction.setApplicationData(accountManager);
-      newClientTransaction.sendRequest();
+      
+      // Check if this is a WebSocket/WSS connection to prevent recursive loop
+      var originalRequest = event.getClientTransaction().getRequest();
+      boolean isWebSocket = TransportDetector.isWebSocketTransport(originalRequest);
+      SipMessageSender.sendRequest(newClientTransaction, isWebSocket);
       
       return newClientTransaction;
     } catch (NullPointerException | SipException e) {

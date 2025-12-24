@@ -426,6 +426,10 @@ public class GRPCSipListener implements SipListener {
     try {
       Request requestOut = RequestUpdater.updateRequest(request, headers);
       var callId = (CallIdHeader) requestOut.getHeader(CallIdHeader.NAME);
+      
+      // Check if this is a WebSocket/WSS connection to prevent recursive loop
+      boolean isWebSocket = TransportDetector.isWebSocketTransport(requestOut);
+      
       // Does not need a transaction
       if (requestOut.getMethod().equals(Request.ACK)) {
         var transaction = transactionManager.getClientTransaction(callId.getCallId());
@@ -440,7 +444,7 @@ public class GRPCSipListener implements SipListener {
             LOG.debug("an exception occurred while processing callId: {}", callId, e);
           }
         }
-        this.sipProvider.sendRequest(requestOut);
+        SipMessageSender.sendRequest(this.sipProvider, requestOut, isWebSocket);
         return;
       }
 
@@ -449,7 +453,7 @@ public class GRPCSipListener implements SipListener {
       // Setting authentication artifact
       var host = ((SipURI) requestOut.getRequestURI()).getHost();
       clientTransaction.setApplicationData(AuthenticationHandler.createAccountManager(headers, host));
-      clientTransaction.sendRequest();
+      SipMessageSender.sendRequest(clientTransaction, isWebSocket);
       transactionManager.putTransactions(callId.getCallId(), clientTransaction, serverTransaction);
     } catch (SipException e) {
       var callId = (CallIdHeader) request.getHeader(CallIdHeader.NAME);
@@ -484,7 +488,7 @@ public class GRPCSipListener implements SipListener {
       var clientTransaction = this.sipProvider.getNewClientTransaction(
           cancelRequest);
 
-      clientTransaction.sendRequest();
+      SipMessageSender.sendRequest(clientTransaction, isWebSocket);
 
       // Sends 487 (Request terminated) back to client
       var terminatedResponse = this.messageFactory.createResponse(
@@ -541,7 +545,8 @@ public class GRPCSipListener implements SipListener {
       // Sending Cancel to destination
       var cancelRequest = originalClientTransaction.createCancel();
       cancelRequest.setRequestURI(sipURI);
-      this.sipProvider.getNewClientTransaction(cancelRequest).sendRequest();
+      var cancelClientTransaction = this.sipProvider.getNewClientTransaction(cancelRequest);
+      SipMessageSender.sendRequest(cancelClientTransaction, isWebSocket);
 
       // Sends 487 (Request terminated) back to client
       // Use the same WebSocket detection from the original request

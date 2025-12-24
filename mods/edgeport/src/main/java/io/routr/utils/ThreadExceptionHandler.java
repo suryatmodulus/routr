@@ -24,8 +24,9 @@ import org.apache.logging.log4j.Logger;
 /**
  * Default uncaught exception handler for threads.
  * This is particularly important for catching StackOverflowError in JAIN-SIP
- * internal threads (like EventScannerThread) that can occur during WSS
- * connection establishment due to recursion in the JAIN-SIP library.
+ * internal threads (like EventScannerThread) that can occur when attempting to
+ * send messages on closed WebSocket/WSS connections, particularly in edge cases
+ * when receiving a REQUEST (like BYE) on a closed connection.
  */
 public class ThreadExceptionHandler implements Thread.UncaughtExceptionHandler {
   private static final Logger LOG = LogManager.getLogger(ThreadExceptionHandler.class);
@@ -35,8 +36,8 @@ public class ThreadExceptionHandler implements Thread.UncaughtExceptionHandler {
     if (throwable instanceof StackOverflowError) {
       String threadName = thread.getName();
       LOG.error(
-          "StackOverflowError in thread \"{}\" - likely caused by WSS connection recursion in JAIN-SIP library. " +
-          "This may indicate a bug in the JAIN-SIP library's NioTlsWebSocketMessageChannel implementation. " +
+          "StackOverflowError in thread \"{}\" - edge case: attempting to send message on a closed WebSocket/WSS connection. " +
+          "This can occur when receiving a REQUEST (like BYE) on a closed connection (perhaps due to network issues). " +
           "The thread will continue running but the operation that caused the error may have failed.",
           threadName,
           throwable
